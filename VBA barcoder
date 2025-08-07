@@ -1,0 +1,182 @@
+Option Explicit
+
+'=============================
+' Error Logging
+'=============================
+Public Sub LogError(ByVal SourceSub As String, ByVal ErrNumber As Long, ByVal ErrDescription As String)
+    On Error Resume Next ' Prevent crash inside logging
+
+    Dim logSheet As Worksheet
+    Dim nextRow As Long
+
+    Set logSheet = ThisWorkbook.Sheets("ErrorLog")
+    If logSheet Is Nothing Then Exit Sub
+
+    nextRow = logSheet.Cells(logSheet.Rows.Count, 1).End(xlUp).Row + 1
+
+    With logSheet
+        .Cells(nextRow, 1).Value = Now
+        .Cells(nextRow, 2).Value = SourceSub
+        .Cells(nextRow, 3).Value = ErrNumber
+        .Cells(nextRow, 4).Value = ErrDescription
+    End With
+End Sub
+
+'=============================
+' Safe XLookup Helper
+'=============================
+Private Function SafeXLookup(key As Variant, lookupCol As Range, returnCol As Range) As Variant
+    On Error GoTo ErrHandler
+
+    SafeXLookup = Application.WorksheetFunction.XLookup(key, lookupCol, returnCol)
+    Exit Function
+
+ErrHandler:
+    Call LogError("SafeXLookup", Err.Number, Err.Description)
+    SafeXLookup = "n/a"
+End Function
+
+'=============================
+' Clock-In Button
+'=============================
+Private Sub btnClockIn_Click()
+    On Error GoTo ErrHandler
+
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets("clockin")
+    Dim wsTarget As Worksheet: Set wsTarget = ThisWorkbook.Sheets("rawbi")
+
+    Dim workOrderNumber As String: workOrderNumber = Trim(txtWorkOrder.Value)
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+
+    If Trim(empid.Value) = "" Then
+        MsgBox "Missing Employee ID.", vbExclamation
+        Exit Sub
+    End If
+
+    If workOrderNumber = "" Then workOrderNumber = "Indirect"
+
+    Dim clockInTime As Date: clockInTime = Now
+
+    ' Save to clockin sheet
+    ws.Cells(lastRow, 1).Value = workOrderNumber
+    ws.Cells(lastRow, 2).Value = SafeXLookup(workOrderNumber, wsTarget.Range("A:A"), wsTarget.Range("C:C")) ' Operation
+    ws.Cells(lastRow, 3).Value = SafeXLookup(workOrderNumber, wsTarget.Range("A:A"), wsTarget.Range("G:G")) ' Part ID
+    ws.Cells(lastRow, 4).Value = empid.Value
+    ws.Cells(lastRow, 5).Value = setupchckbox.Value
+    ws.Cells(lastRow, 6).Value = clockInTime
+    ws.Cells(lastRow, 6).NumberFormat = "mm/dd hh:mm:ss"
+
+    Unload Me
+    laborticket3.Show
+    Exit Sub
+
+ErrHandler:
+    Call LogError("btnClockIn_Click - WO#" & workOrderNumber, Err.Number, Err.Description)
+    MsgBox "An error occurred during clock-in. Please notify your supervisor.", vbCritical
+End Sub
+
+'=============================
+' Clock-Out Button
+'=============================
+Private Sub btnClockout_Click()
+    On Error GoTo ErrHandler
+
+    Dim ws As Worksheet: Set ws = ThisWorkbook.Sheets("clockin")
+    Dim wsTarget As Worksheet: Set wsTarget = ThisWorkbook.Sheets("rawbi")
+
+    If Trim(QTYGoodData.Value) = "" Or Trim(ScrapData.Value) = "" Then
+        MsgBox "Missing quantity or scrap data.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim workOrderNumber As String: workOrderNumber = Trim(txtWorkOrder.Value)
+    Dim empIDStr As String: empIDStr = Trim(empid.Value)
+
+    Dim clockInRow As Long: clockInRow = 0
+    Dim lastRow As Long: lastRow = ws.Cells(ws.Rows.Count, 4).End(xlUp).Row
+
+    Dim i As Long
+    For i = lastRow To 1 Step -1
+        If ws.Cells(i, 1).Value = workOrderNumber And ws.Cells(i, 4).Value = empIDStr And IsEmpty(ws.Cells(i, 7).Value) Then
+            clockInRow = i
+            Exit For
+        End If
+    Next i
+
+    If clockInRow = 0 Then
+        MsgBox "No matching Work Order found or already clocked out!", vbExclamation
+        Exit Sub
+    End If
+
+    Dim clockOutTime As Date: clockOutTime = Now
+    Dim clockInTime As Date: clockInTime = ws.Cells(clockInRow, 6).Value
+    Dim Duration As Double: Duration = (clockOutTime - clockInTime) * 24
+
+    ' Deduct lunch if overlap
+    If clockInTime < TimeValue("13:00:00") And clockOutTime > TimeValue("12:00:00") Then
+        Duration = Duration - 1
+    End If
+
+    Dim QTYGood As Long: QTYGood = CLng(QTYGoodData.Value)
+    Dim QTYBad As Long: QTYBad = CLng(ScrapData.Value)
+    Dim rate As Double: If Duration > 0 Then rate = (QTYGood + QTYBad) / Duration Else rate = 0
+
+    ws.Cells(clockInRow, 7).Value = clockOutTime
+    ws.Cells(clockInRow, 8).Value = Duration
+    ws.Cells(clockInRow, 9).Value = QTYGood
+    ws.Cells(clockInRow, 10).Value = QTYBad
+    ws.Cells(clockInRow, 11).Value = rate
+    ws.Cells(clockInRow, 13).Value = OperationDonecheckbox.Value
+    ws.Cells(clockInRow, 14).Value = LFdata.Value
+    ws.Cells(clockInRow, 15).Value = Notesdata.Value
+    ws.Cells(clockInRow, 16).Value = downreasonsdata.Value
+    ws.Cells(clockInRow, 17).Value = minsdata.Value
+
+    ' Rate Estimation
+    Dim setup As Double, runEst As Double, pcs As Double
+    If workOrderNumber <> "Indirect" Then
+        setup = SafeXLookup(workOrderNumber, wsTarget.Range("A:A"), wsTarget.Range("K:K"))
+        runEst = SafeXLookup(workOrderNumber, wsTarget.Range("A:A"), wsTarget.Range("L:L"))
+        pcs = SafeXLookup(workOrderNumber, wsTarget.Range("A:A"), wsTarget.Range("M:M"))
+        If (setup + runEst) > 0 Then
+            ws.Cells(clockInRow, 12).Value = pcs / (setup + runEst)
+        Else
+            ws.Cells(clockInRow, 12).Value = 0
+        End If
+    Else
+        ws.Cells(clockInRow, 12).Value = 0
+    End If
+
+    ThisWorkbook.Save
+    Unload Me
+    laborticket3.Show
+    laborticket3.empid.SetFocus
+    Exit Sub
+
+ErrHandler:
+    Call LogError("btnClockout_Click - WO#" & workOrderNumber, Err.Number, Err.Description)
+    MsgBox "An error occurred during clock-out. Please notify your supervisor.", vbCritical
+End Sub
+
+'=============================
+' Form Password on Close
+'=============================
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    On Error GoTo ErrHandler
+
+    Const password As String = "123"
+    Dim inputPassword As String
+
+    If CloseMode = 0 Then
+        inputPassword = InputBox("Please enter the password to close the form:", "Password Required")
+        If inputPassword <> password Then
+            MsgBox "Incorrect password."
+            Cancel = True
+        End If
+    End If
+    Exit Sub
+
+ErrHandler:
+    Call LogError("UserForm_QueryClose", Err.Number, Err.Description)
+    MsgBox "An error occurred while closing the form.", vbCritical
+End Sub
