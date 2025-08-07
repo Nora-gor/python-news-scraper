@@ -1,0 +1,224 @@
+import os
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from datetime import datetime
+from openpyxl import load_workbook
+
+# === Setup ===
+user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+headers = {'User-Agent': user_agent}
+today_str = datetime.now().strftime('%Y-%m-%d')
+output_file = 'news_scrape.xlsx'
+meta_sheet = 'Meta'
+excluded_keywords = ['games', 'crossword', 'puzzle', 'weather', 'video', 'entertainment', 'sport','sports','category', 'store' , 'donate','underscored','author','bleacherreport'  ]
+#required_keywords = ['']
+
+# === Reusable link validator ===
+#def contains_required_keyword(headline: str, keywords: list) -> bool:
+   # return any(kw.lower() in headline.lower() for kw in keywords)
+def is_valid_article_link(link: str, headline: str, excluded_keywords: list) -> bool:
+    if not link or not headline:
+        return False
+    if len(headline) < 10:
+        return False
+    if any(keyword in link.lower() for keyword in excluded_keywords):
+        return False
+    junk_patterns = ['about', 'contact', 'privacy', 'terms', 'login', 'signup', 'advertising' 'category', 'store' , 'donate','underscored' ]
+    if any(pattern in link.lower() for pattern in junk_patterns):
+        return False
+    return True
+
+# === List of sites to scrape ===
+sites = [
+
+#whyy.org philadelphia
+       {
+    'url': 'https://whyy.org/secondary-categories/philadelphia/',  # Or main page with articles
+    'selector': 'a[href^="https://whyy.org/articles/"]',  # Select all <a> tags where href starts with /articles/
+    'base_url': '',  # Full URLs in href, so no base URL needed
+    'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+},
+#cnn
+    {
+        'url': 'https://www.cnn.com/',
+        'selector': 'span.container__headline-text',
+        'base_url': 'https://www.cnn.com',
+        'selector_type': 'text_inside_and_find_link'
+    },
+#metrophiladelphia
+    {
+        'url': 'https://metrophiladelphia.com/',
+        'selector': 'a[href^="https://metrophiladelphia.com/"]',
+        'base_url': '',
+        'selector_type': 'text_in_link'
+    },
+#apnews.com
+    {
+    'url': 'https://apnews.com/hub/lgbtq/',  # Or main page with articles
+    'selector': 'span.PagePromoContentIcons-text',  # Select all <a> tags where href starts with /articles/
+    'base_url': 'https://apnews.com/hub/lgbtq/',  # Full URLs in href, so no base URL needed
+    'selector_type': 'span.PagePromoContentIcons-text'  # Headline is link text, so use text_in_link mode
+    },
+ #billy penn
+    {
+    'url': 'https://apnews.com/hub/lgbtq/',  # Or main page with articles
+    'selector': 'span.PagePromoContentIcons-text',  # Select all <a> tags where href starts with /articles/
+    'base_url': 'https://apnews.com/hub/lgbtq/',  # Full URLs in href, so no base URL needed
+    'selector_type': 'span.PagePromoContentIcons-text'  # Headline is link text, so use text_in_link mode
+    },
+
+ #philly mag
+ {
+    'url': 'https://www.phillymag.com/news/',  # Or main page with articles
+   'selector': 'a[href^="https://www.phillymag.com/news/"]',
+        'base_url': '',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+ #kensington voice--Accountability
+ {
+    'url': 'https://www.kensingtonvoice.com/tag/accountability/',  # Or main page with articles
+   'selector': 'a.c-card__link',
+        'base_url': 'https://www.kensingtonvoice.com/tag/accountability/',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+    #kensington voice--Community Connection
+ {
+    'url': 'https://www.kensingtonvoice.com/tag/community-connection/',  # Or main page with articles
+   'selector': 'a.c-card__link',
+        'base_url': 'https://www.kensingtonvoice.com/tag/community-connection/',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+#kensington voice--Guides & Resources
+ {
+    'url': 'https://www.kensingtonvoice.com/tag/guides-resources/',  # Or main page with articles
+   'selector': 'a.c-card__link',
+        'base_url': 'https://www.kensingtonvoice.com/tag/guides-resources/',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+#kensington voice--Solutions Spotlight
+ {
+    'url': 'https://www.kensingtonvoice.com/tag/solutions-spotlight/',  # Or main page with articles
+   'selector': 'a.c-card__link',
+        'base_url': 'https://www.kensingtonvoice.com/tag/solutions-spotlight/',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+
+    ########################Still working on ############################################
+ #philly inquirer
+{
+    'url': 'https://www.inquirer.com/',  # Main site
+    'selector': 'h4.font-inquirer-headline',  # Simplified and more stable selector
+    'base_url': 'https://www.inquirer.com/',
+    'selector_type': 'text'  # <h4> tag with plain text, no link
+},
+ #Philly gays news
+ {
+    'url': 'https://epgn.com/category/news/local-news/',  # Or main page with articles
+    'selector': 'a[href^="https://epgn.com/category/news/local-news/"]',
+    'base_url': '',
+    'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+
+ },
+  #https://unicornriot.ninja/
+  {
+    'url': 'https://unicornriot.ninja/',  # Or main page with articles
+   'selector': 'a[href^="https://unicornriot.ninja/"]',
+        'base_url': '',
+        'selector_type': 'text_in_link'  # Headline is link text, so use text_in_link mode
+    },
+  #https://crimethinc.com/
+  #https://theintercept.com/
+    # Add more sites here...
+]
+
+# === Containers ===
+all_data = []
+all_meta = {
+    'Date': today_str,
+    'Scraped At': datetime.now().strftime('%Y-%m-%d %H:%M'),
+    'Total Headlines': 0,
+    'Error': ''
+}
+
+# === Scraper function ===
+def scrape_site(site_info):
+    data = []
+    url = site_info['url']
+    selector = site_info['selector']
+    base_url = site_info['base_url']
+    selector_type = site_info.get('selector_type', 'text_in_link')
+    
+
+    meta = {
+        'Source': url,
+        'Scraped At': datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'Total Headlines': 0,
+        'Error': ''
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        elements = soup.select(selector)
+
+        if not elements:
+            raise ValueError(f"No headlines found for {url} — check CSS selector.")
+
+        for element in elements:
+            if selector_type == 'text_in_link':
+                link = element['href'] if element.has_attr('href') else ''
+                headline = element.get_text(separator=' ', strip=True)
+            else:  # text_inside_and_find_link
+                headline = element.get_text(separator=' ', strip=True)
+                parent = element.find_parent('a')
+                link = parent['href'] if parent and parent.has_attr('href') else ''
+
+            if not is_valid_article_link(link, headline, excluded_keywords):
+                continue
+
+            #if not contains_required_keyword(headline, required_keywords):
+                continue  # Skip if it doesn't contain any of the required keywords
+
+            if link and not link.startswith('http'):
+                link = base_url + link
+
+            data.append({
+                'Headline': headline,
+                'Link': link,
+                'Scraped At': meta['Scraped At']
+            })
+
+        meta['Total Headlines'] = len(data)
+        return data, meta
+
+    except Exception as e:
+        meta['Error'] = str(e)
+        print(f"⚠️ Error scraping {url}: {e}")
+        return data, meta
+
+# === Loop through sites ===
+for site in sites:
+    data, meta = scrape_site(site)
+    all_data.extend(data)
+    all_meta['Total Headlines'] += meta['Total Headlines']
+
+# === Write to Excel ===
+df_headlines = pd.DataFrame(all_data)
+df_meta = pd.DataFrame([all_meta])
+
+if os.path.exists(output_file):
+    with pd.ExcelWriter(output_file, engine='openpyxl', mode='a', if_sheet_exists='new') as writer:
+        df_headlines.to_excel(writer, sheet_name=today_str, index=False)
+        try:
+            del writer.book[meta_sheet]
+        except KeyError:
+            pass
+        df_meta.to_excel(writer, sheet_name=meta_sheet, index=False)
+else:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        df_headlines.to_excel(writer, sheet_name=today_str, index=False)
+        df_meta.to_excel(writer, sheet_name=meta_sheet, index=False)
+
+print(f"✅ Scraping complete. Saved to {output_file} → Sheet: '{today_str}'")
